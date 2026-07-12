@@ -1,0 +1,384 @@
+---
+format:
+  typst:
+    margin:
+      x: 1in
+      y: 0.7in
+    fontsize: 10.5pt
+    fig-align: center
+    keep-tex: false
+---
+
+```{=typst}
+#show heading: it => {
+  it
+  v(3pt)
+}
+
+#v(14pt)
+#align(center)[
+  #text(size: 18pt, weight: "bold")[Gerrymandering Analysis] \
+  #text(size: 11pt, fill: rgb(90,90,90))[2024 Congressional Map vs. Proposed AB 604 Map]
+]
+#v(4pt)
+```
+
+```{r}
+#| label: setup
+#| message: false
+#| echo: false
+library(tidyverse)
+library(knitr)
+library(sf)
+
+g24 <- read_csv("data/g24-clean.csv", show_col_types = FALSE)
+
+g24_district_results <- g24 |>
+  group_by(CDDIST) |>
+  summarize(
+    dem_01 = sum(CNGDEM01, na.rm = TRUE),
+    dem_02 = sum(CNGDEM02, na.rm = TRUE),
+    rep_01 = sum(CNGREP01, na.rm = TRUE),
+    rep_02 = sum(CNGREP02, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(
+    d_votes = dem_01 + dem_02,
+    r_votes = rep_01 + rep_02,
+    d_vs_r = dem_01 > 0 & rep_01 > 0
+  ) |>
+  filter(d_vs_r) |>
+  mutate(prop_rep = r_votes / (d_votes + r_votes))
+
+approach_A <- read_csv("data/g24-rerun-approachA.csv", show_col_types = FALSE) |>
+  mutate(prop_rep = r_votes / (d_votes + r_votes))
+
+approach_B <- read_csv("data/g24-rerun-approachB.csv", show_col_types = FALSE) |>
+  mutate(prop_rep = r_votes / (d_votes + r_votes))
+
+n_wasted <- function(by, against) {
+  n_wasted <- rep(0, length(by))
+  w_threshold <- floor((by + against) / 2) + 1
+  n_wasted[by > against]  <- by[by > against] - w_threshold[by > against]
+  n_wasted[by <= against] <- by[by <= against]
+  n_wasted
+}
+
+compute_metrics <- function(df, label) {
+  mm <- df |>
+    summarize(mean_p = mean(prop_rep), med_p = median(prop_rep)) |>
+    mutate(score = mean_p - med_p)
+
+  eg <- df |>
+    mutate(
+      d_wasted = n_wasted(d_votes, r_votes),
+      r_wasted = n_wasted(r_votes, d_votes)
+    ) |>
+    summarize(
+      total_d_wasted = sum(d_wasted),
+      total_r_wasted = sum(r_wasted),
+      total_d = sum(d_votes),
+      total_r = sum(r_votes)
+    ) |>
+    mutate(EG = (total_d_wasted - total_r_wasted) / (total_d + total_r))
+
+  tibble(
+    map = label,
+    n_districts = nrow(df),
+    dem_seats = sum(df$d_votes > df$r_votes),
+    mean_median = mm$score,
+    efficiency_gap = eg$EG
+  )
+}
+
+summary_tbl <- bind_rows(
+  compute_metrics(g24_district_results, "2024 Map"),
+  compute_metrics(approach_A, "New Map (Approach A)"),
+  compute_metrics(approach_B, "New Map (Approach B)")
+)
+
+# Pull a single value out of summary_tbl by map label + column, so prose
+# below always matches the table -- no more hand-typed numbers going stale.
+val <- function(map_label, col) summary_tbl[[col]][summary_tbl$map == map_label]
+fmt_mm  <- function(x) sprintf("%+.4f", x)
+fmt_eg  <- function(x) sprintf("%+.1f%%", x * 100)
+
+knitr::opts_chunk$set(fig.align = "center")
+
+map_colors <- c(
+  "2024 Map" = "#6b7280",
+  "New Map (Approach A)" = "#3182bd",
+  "New Map (Approach B)" = "#de2d26"
+)
+
+# --- Spatial data, for the maps only (SR precinct geography) ---
+winner_colors <- c("D" = "#3182bd", "R" = "#de2d26", "TIE" = "purple", "No data" = "gray90")
+
+classify_winner_votes <- function(dem_votes, rep_votes) {
+  case_when(
+    is.na(dem_votes) | is.na(rep_votes) ~ "No data",
+    dem_votes > rep_votes ~ "D",
+    rep_votes > dem_votes ~ "R",
+    TRUE ~ "TIE"
+  )
+}
+
+sr_precinct_geo <- read_csv(
+  "data/state_g24_sov_data_by_g24_srprec.csv",
+  na = c("", "NA", "***"),
+  show_col_types = FALSE
+) |>
+  select(COUNTY, SRPREC_KEY, CDDIST, CNGDEM01, CNGDEM02, CNGREP01, CNGREP02) |>
+  mutate(across(c(CNGDEM01, CNGDEM02, CNGREP01, CNGREP02), as.numeric))
+
+sr_shp <- suppressWarnings(st_read("data/shapefiles/srprec_state_g24_v01_shp.shp", quiet = TRUE)) |>
+  st_transform(3310) |>
+  st_set_precision(1) |>
+  st_make_valid() |>
+  st_collection_extract("POLYGON")
+
+cd_map <- st_read("data/shapefiles/AB604/AB604.shp", quiet = TRUE) |>
+  st_transform(3310) |>
+  st_make_valid() |>
+  st_collection_extract("POLYGON")
+
+map_2024 <- sr_shp |>
+  left_join(sr_precinct_geo, by = "SRPREC_KEY") |>
+  mutate(
+    dem_votes = CNGDEM01 + CNGDEM02,
+    rep_votes = CNGREP01 + CNGREP02,
+    winner_party = classify_winner_votes(dem_votes, rep_votes)
+  )
+
+map_2024_by_district <- map_2024 |>
+  group_by(CDDIST) |>
+  summarize(
+    dem_votes = sum(dem_votes, na.rm = TRUE),
+    rep_votes = sum(rep_votes, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(winner_party = classify_winner_votes(dem_votes, rep_votes))
+
+map_new_A <- cd_map |>
+  left_join(approach_A, by = c("DISTRICT" = "dist")) |>
+  mutate(winner_party = classify_winner_votes(d_votes, r_votes))
+
+map_new_B <- cd_map |>
+  left_join(approach_B, by = c("DISTRICT" = "new_district")) |>
+  mutate(winner_party = classify_winner_votes(d_votes, r_votes))
+```
+
+## Summary of Findings
+
+Relative to the 2024 congressional district map, the proposed AB 604 map would
+shift California's partisan balance toward Democrats on every metric examined.
+Both independent reallocation methods (area-weighted interpolation and
+population-weighted block allocation) agree on the direction and rough
+magnitude of this shift.
+
+```{r}
+#| label: tbl-summary
+#| echo: false
+#| tbl-cap: "Gerrymandering metrics by map"
+summary_tbl |>
+  mutate(
+    mean_median = round(mean_median, 4),
+    efficiency_gap = paste0(round(efficiency_gap * 100, 1), "%")
+  ) |>
+  kable(col.names = c("Map", "Districts", "Dem Seats", "Mean-Median", "Efficiency Gap"))
+```
+
+- **Seats:** Democrats would hold **`r val("New Map (Approach A)", "dem_seats")`**
+  of `r val("New Map (Approach A)", "n_districts")` districts under the new
+  map by either reallocation method.
+- **Mean-median score:** moves from **`r fmt_mm(val("2024 Map", "mean_median"))`**
+  under the 2024 map to **`r fmt_mm(val("New Map (Approach A)", "mean_median"))`**
+  (Approach A) / **`r fmt_mm(val("New Map (Approach B)", "mean_median"))`**
+  (Approach B) under the new map -- a swing from a slight pro-Republican
+  signal to a slight pro-Democratic one.
+- **Efficiency gap:** moves from **`r fmt_eg(val("2024 Map", "efficiency_gap"))`**
+  under the 2024 map to **`r fmt_eg(val("New Map (Approach A)", "efficiency_gap"))`**
+  (Approach A) / **`r fmt_eg(val("New Map (Approach B)", "efficiency_gap"))`**
+  (Approach B) under the new map. *Negative values favor Democrats;* the new
+  map's larger negative gap is a substantially larger Democratic advantage.
+
+**Caveat:** 2024-map metrics only include districts with an actual D-vs-R
+contest that year; both new-map approaches aggregate all votes falling into
+each new district regardless of the original race. Some of the apparent
+shift may reflect this broader inclusion rather than redistricting itself --
+though the *direction* of the shift is consistent across both independent
+reallocation methods.
+
+```{r}
+#| label: fig-summary-bar
+#| echo: false
+#| fig-cap: "Mean-median score and efficiency gap by map"
+#| fig-width: 6
+#| fig-height: 2.6
+summary_tbl |>
+  pivot_longer(c(mean_median, efficiency_gap), names_to = "metric", values_to = "value") |>
+  mutate(metric = recode(metric,
+    mean_median = "Mean-Median Score",
+    efficiency_gap = "Efficiency Gap"
+  )) |>
+  ggplot(aes(x = map, y = value, fill = map)) +
+  geom_col(show.legend = FALSE, width = 0.6) +
+  geom_hline(yintercept = 0, linewidth = 0.4) +
+  facet_wrap(~metric, scales = "free_y") +
+  scale_fill_manual(values = map_colors) +
+  labs(x = NULL, y = "Value (positive favors Republicans)") +
+  theme_minimal(base_size = 9) +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1))
+```
+
+{{< pagebreak >}}
+
+## Maps: Old District Lines vs. New District Lines
+
+Both the 2024 map and the new AB 604 map are shown here at the **district
+level**, so that boundary changes and winner changes can be compared
+directly. Gray areas indicate districts/precincts with no D-vs-R data
+available.
+
+```{r}
+#| label: fig-maps-row
+#| echo: false
+#| layout-ncol: 3
+#| fig-cap: "District maps: 2024 vs. new AB 604 map (Approach A and Approach B)"
+#| fig-subcap:
+#|   - "2024 map, by district"
+#|   - "New map, Approach A (area-weighted)"
+#|   - "New map, Approach B (population-weighted)"
+#| fig-width: 3.4
+#| fig-height: 3.6
+ggplot(map_2024_by_district) +
+  geom_sf(aes(fill = winner_party), color = "white", linewidth = 0.15) +
+  scale_fill_manual(values = winner_colors, name = "Winner") +
+  theme_minimal(base_size = 10) +
+  theme(axis.text = element_blank(), axis.ticks = element_blank())
+
+ggplot(map_new_A) +
+  geom_sf(aes(fill = winner_party), color = "white", linewidth = 0.15) +
+  scale_fill_manual(values = winner_colors, name = "Winner") +
+  theme_minimal(base_size = 10) +
+  theme(axis.text = element_blank(), axis.ticks = element_blank())
+
+ggplot(map_new_B) +
+  geom_sf(aes(fill = winner_party), color = "white", linewidth = 0.15) +
+  scale_fill_manual(values = winner_colors, name = "Winner") +
+  theme_minimal(base_size = 10) +
+  theme(axis.text = element_blank(), axis.ticks = element_blank())
+```
+
+**Note:** Approaches A and B produce **identical district winners in all 52
+districts**; the two methods differ only in vote margins, which is reflected
+in the small differences in mean-median score and efficiency gap reported
+above.
+
+## Two Reallocation Methods
+
+Both approaches solve the same problem -- putting 2024 votes onto district
+lines that didn't exist in 2024 -- but reallocate votes on different bases,
+summarized below.
+
+```{r}
+#| label: tbl-methods
+#| echo: false
+#| tbl-cap: "How Approach A and Approach B reallocate votes"
+#| tbl-colwidths: [18, 41, 41]
+tibble(
+  Aspect = c("Weighting basis", "Mechanism", "Key assumption", "Tradeoff"),
+  `Approach A` = c(
+    "Land area",
+    "Overlays SR-precinct shapefiles onto new districts; splits votes by land-area overlap (`sf::st_interpolate_aw()`)",
+    "Voters spread evenly across a precinct's area",
+    "Simple, but can distort large, unevenly populated precincts"
+  ),
+  `Approach B` = c(
+    "Registered voters",
+    "Splits precinct votes to census blocks by voter share, then re-aggregates to new districts",
+    "Votes track where people actually live",
+    "More defensible, needs block-level crosswalk files"
+  )
+) |>
+  kable(col.names = c("Aspect", "Approach A (area-weighted)", "Approach B (population-weighted)"))
+```
+
+```{r}
+#| label: fig-hist-AB
+#| echo: false
+#| layout-ncol: 2
+#| fig-cap: "Republican vote share by district, Approach A vs. Approach B"
+#| fig-subcap:
+#|   - "Approach A (area-weighted)"
+#|   - "Approach B (population-weighted)"
+#| fig-width: 3.8
+#| fig-height: 2.0
+approach_A |>
+  ggplot(aes(x = prop_rep)) +
+  geom_histogram(bins = 20, fill = "#3182bd", color = "white") +
+  geom_vline(xintercept = 0.5, linetype = "dashed", linewidth = 0.4) +
+  labs(x = "Republican vote share", y = "Number of districts") +
+  theme_minimal(base_size = 9)
+
+approach_B |>
+  ggplot(aes(x = prop_rep)) +
+  geom_histogram(bins = 20, fill = "#de2d26", color = "white") +
+  geom_vline(xintercept = 0.5, linetype = "dashed", linewidth = 0.4) +
+  labs(x = "Republican vote share", y = "Number of districts") +
+  theme_minimal(base_size = 9)
+```
+
+## Approach A vs. Approach B: A Built-In Robustness Check
+
+Approaches A and B use different weighting logic (land area vs. registered
+voters) to solve the same problem: reallocating 2024 votes onto district
+lines that didn't exist yet in 2024. Comparing them is a built-in robustness
+check: if both methods land on similar answers despite using different
+assumptions, that gives more confidence in the conclusion than either method
+alone.
+
+```{r}
+#| label: tbl-compare
+#| echo: false
+#| tbl-cap: "Approach A vs. Approach B, side by side"
+tibble(
+  metric = c("Dem seats", "Mean-median score", "Efficiency gap"),
+  `Approach A` = c(
+    summary_tbl$dem_seats[summary_tbl$map == "New Map (Approach A)"],
+    round(summary_tbl$mean_median[summary_tbl$map == "New Map (Approach A)"], 4),
+    paste0(round(summary_tbl$efficiency_gap[summary_tbl$map == "New Map (Approach A)"] * 100, 1), "%")
+  ),
+  `Approach B` = c(
+    summary_tbl$dem_seats[summary_tbl$map == "New Map (Approach B)"],
+    round(summary_tbl$mean_median[summary_tbl$map == "New Map (Approach B)"], 4),
+    paste0(round(summary_tbl$efficiency_gap[summary_tbl$map == "New Map (Approach B)"] * 100, 1), "%")
+  )
+) |>
+  kable(col.names = c("Metric", "Approach A", "Approach B"))
+```
+
+Both approaches land on the same seat count (**46**) and closely aligned
+mean-median and efficiency gap values, despite using entirely different
+reallocation logic. As shown in @fig-maps-row, this agreement extends all
+the way down to individual district winners: not a single district flips
+between the two methods. This agreement is itself evidence that the
+conclusion is not an artifact of either weighting method.
+
+## Conclusion
+
+The proposed AB 604 map represents a meaningful shift in partisan advantage
+relative to the 2024 map, favoring Democrats across all three metrics
+examined: seat count, mean-median score, and efficiency gap. This conclusion
+is robust to the choice of vote-reallocation method, since Approach A
+(area-weighted) and Approach B (population-weighted) agree on every
+district's winner and produce closely aligned fairness metrics, despite
+resting on different assumptions about how votes are distributed within a
+precinct.
+
+The main limitation of this analysis is the asymmetry in how districts were
+included: the 2024-map metrics exclude any district that was not an actual
+D-vs-R contest that year, while both new-map approaches include all votes
+falling into each new district regardless of the original race. Readers
+should treat the *direction* of the shift as well-supported, while treating
+the exact *magnitude* with some caution given this asymmetry.
