@@ -18,12 +18,6 @@ R, sf, tidyverse, Quarto with Typst output
  
 `gerrymandering-report.pdf` is the rendered report.
  
-To reproduce it, run:
- 
-```bash
-quarto render gerrymandering-report.qmd
-```
- 
 ## Data
  
-Data came from public California Statement of Vote precinct level files and shapefiles. It needed a fair amount of cleaning, including inconsistent precinct geographies, duplicate IDs, and placeholder values that looked like real numbers. The raw data files are not included in this repo due to file size, so the qmd will not run end to end without them.
+Data came from public California Statement of Vote precinct level files and shapefiles. It needed a fair amount of cleaning, including inconsistent precinct geographies, duplicate IDs, and placeholder values that looked like real numbers. The raw data files are not included in this repo due to their size, so the qmd is shared as a record of the full pipeline rather than something meant to be re-run as is.
