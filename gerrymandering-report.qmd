@@ -97,8 +97,8 @@ summary_tbl <- bind_rows(
   compute_metrics(approach_B, "New Map (Approach B)")
 )
 
-# Pull a single value out of summary_tbl by map label + column, so prose
-# below always matches the table -- no more hand-typed numbers going stale.
+# Pull a single value out of summary_tbl by map label and column, so the
+# prose below always matches the table. No hand typed numbers to go stale.
 val <- function(map_label, col) summary_tbl[[col]][summary_tbl$map == map_label]
 fmt_mm  <- function(x) sprintf("%+.4f", x)
 fmt_eg  <- function(x) sprintf("%+.1f%%", x * 100)
@@ -112,14 +112,15 @@ map_colors <- c(
 )
 
 # --- Spatial data, for the maps only (SR precinct geography) ---
-winner_colors <- c("D" = "#3182bd", "R" = "#de2d26", "TIE" = "purple", "No data" = "gray90")
+winner_colors <- c("D" = "#3182bd", "R" = "#de2d26", "No data" = "gray85")
 
 classify_winner_votes <- function(dem_votes, rep_votes) {
   case_when(
     is.na(dem_votes) | is.na(rep_votes) ~ "No data",
+    dem_votes == 0 & rep_votes == 0 ~ "No data",
     dem_votes > rep_votes ~ "D",
     rep_votes > dem_votes ~ "R",
-    TRUE ~ "TIE"
+    TRUE ~ "No data"
   )
 }
 
@@ -157,6 +158,10 @@ map_2024_by_district <- map_2024 |>
     rep_votes = sum(rep_votes, na.rm = TRUE),
     .groups = "drop"
   ) |>
+  st_make_valid() |>
+  st_buffer(5) |>
+  st_buffer(-5) |>
+  st_make_valid() |>
   mutate(winner_party = classify_winner_votes(dem_votes, rep_votes))
 
 map_new_A <- cd_map |>
@@ -170,9 +175,9 @@ map_new_B <- cd_map |>
 
 ## Summary of Findings
 
-Relative to the 2024 congressional district map, the proposed AB 604 map would
-shift California's partisan balance toward Democrats on every metric examined.
-Both independent reallocation methods (area-weighted interpolation and
+Relative to the 2024 congressional district map, the proposed AB 604 map
+would shift California's partisan balance toward Democrats on every metric
+examined. Both independent reallocation methods (area-weighted interpolation and
 population-weighted block allocation) agree on the direction and rough
 magnitude of this shift.
 
@@ -193,21 +198,22 @@ summary_tbl |>
   map by either reallocation method.
 - **Mean-median score:** moves from **`r fmt_mm(val("2024 Map", "mean_median"))`**
   under the 2024 map to **`r fmt_mm(val("New Map (Approach A)", "mean_median"))`**
-  (Approach A) / **`r fmt_mm(val("New Map (Approach B)", "mean_median"))`**
-  (Approach B) under the new map -- a swing from a slight pro-Republican
-  signal to a slight pro-Democratic one.
+  (Approach A) and **`r fmt_mm(val("New Map (Approach B)", "mean_median"))`**
+  (Approach B) under the new map. This is a swing from a slight
+  pro-Republican signal to a slight pro-Democratic one.
 - **Efficiency gap:** moves from **`r fmt_eg(val("2024 Map", "efficiency_gap"))`**
   under the 2024 map to **`r fmt_eg(val("New Map (Approach A)", "efficiency_gap"))`**
-  (Approach A) / **`r fmt_eg(val("New Map (Approach B)", "efficiency_gap"))`**
-  (Approach B) under the new map. *Negative values favor Democrats;* the new
-  map's larger negative gap is a substantially larger Democratic advantage.
+  (Approach A) and **`r fmt_eg(val("New Map (Approach B)", "efficiency_gap"))`**
+  (Approach B) under the new map. Negative values favor Democrats, so the
+  new map's larger negative gap represents a substantially larger Democratic
+  advantage.
 
-**Caveat:** 2024-map metrics only include districts with an actual D-vs-R
-contest that year; both new-map approaches aggregate all votes falling into
-each new district regardless of the original race. Some of the apparent
-shift may reflect this broader inclusion rather than redistricting itself --
-though the *direction* of the shift is consistent across both independent
-reallocation methods.
+**Caveat:** 2024 map metrics only include districts with an actual D versus
+R contest that year. Both new map approaches aggregate all votes falling
+into each new district regardless of the original race. Some of the
+apparent shift may reflect this broader inclusion rather than redistricting
+itself, though the direction of the shift is consistent across both
+independent reallocation methods.
 
 ```{r}
 #| label: fig-summary-bar
@@ -237,8 +243,10 @@ summary_tbl |>
 
 Both the 2024 map and the new AB 604 map are shown here at the **district
 level**, so that boundary changes and winner changes can be compared
-directly. Gray areas indicate districts/precincts with no D-vs-R data
-available.
+directly. The 2024 map is built by aggregating precinct level results up to
+district boundaries, since no separate district level shapefile exists for
+the old map. The new maps use the official AB 604 district shapefile
+directly.
 
 ```{r}
 #| label: fig-maps-row
@@ -249,8 +257,8 @@ available.
 #|   - "2024 map, by district"
 #|   - "New map, Approach A (area-weighted)"
 #|   - "New map, Approach B (population-weighted)"
-#| fig-width: 3.4
-#| fig-height: 3.6
+#| fig-width: 3.2
+#| fig-height: 3.2
 ggplot(map_2024_by_district) +
   geom_sf(aes(fill = winner_party), color = "white", linewidth = 0.15) +
   scale_fill_manual(values = winner_colors, name = "Winner") +
@@ -271,14 +279,14 @@ ggplot(map_new_B) +
 ```
 
 **Note:** Approaches A and B produce **identical district winners in all 52
-districts**; the two methods differ only in vote margins, which is reflected
-in the small differences in mean-median score and efficiency gap reported
-above.
+districts**. The two methods differ only in vote margins, which is
+reflected in the small differences in mean-median score and efficiency gap
+reported above.
 
 ## Two Reallocation Methods
 
-Both approaches solve the same problem -- putting 2024 votes onto district
-lines that didn't exist in 2024 -- but reallocate votes on different bases,
+Both approaches solve the same problem: putting 2024 votes onto district
+lines that did not exist in 2024. They reallocate votes on different bases,
 summarized below.
 
 ```{r}
@@ -290,15 +298,15 @@ tibble(
   Aspect = c("Weighting basis", "Mechanism", "Key assumption", "Tradeoff"),
   `Approach A` = c(
     "Land area",
-    "Overlays SR-precinct shapefiles onto new districts; splits votes by land-area overlap (`sf::st_interpolate_aw()`)",
-    "Voters spread evenly across a precinct's area",
+    "Overlays SR precinct shapefiles onto new districts, then splits votes by land area overlap (`sf::st_interpolate_aw()`)",
+    "Voters are evenly distributed across the precinct",
     "Simple, but can distort large, unevenly populated precincts"
   ),
   `Approach B` = c(
     "Registered voters",
     "Splits precinct votes to census blocks by voter share, then re-aggregates to new districts",
     "Votes track where people actually live",
-    "More defensible, needs block-level crosswalk files"
+    "More defensible, needs block level crosswalk files"
   )
 ) |>
   kable(col.names = c("Aspect", "Approach A (area-weighted)", "Approach B (population-weighted)"))
@@ -312,8 +320,8 @@ tibble(
 #| fig-subcap:
 #|   - "Approach A (area-weighted)"
 #|   - "Approach B (population-weighted)"
-#| fig-width: 3.8
-#| fig-height: 2.0
+#| fig-width: 3.6
+#| fig-height: 1.7
 approach_A |>
   ggplot(aes(x = prop_rep)) +
   geom_histogram(bins = 20, fill = "#3182bd", color = "white") +
@@ -329,14 +337,14 @@ approach_B |>
   theme_minimal(base_size = 9)
 ```
 
-## Approach A vs. Approach B: A Built-In Robustness Check
+## Approach A vs. Approach B: Checking for Agreement
 
-Approaches A and B use different weighting logic (land area vs. registered
-voters) to solve the same problem: reallocating 2024 votes onto district
-lines that didn't exist yet in 2024. Comparing them is a built-in robustness
-check: if both methods land on similar answers despite using different
-assumptions, that gives more confidence in the conclusion than either method
-alone.
+Approaches A and B use different weighting logic, land area versus
+registered voters, to solve the same problem: reallocating 2024 votes onto
+district lines that did not exist yet in 2024. Comparing them is a built-in
+robustness check. If both methods land on similar answers despite using
+different assumptions, that gives more confidence in the conclusion than
+either method alone.
 
 ```{r}
 #| label: tbl-compare
@@ -361,24 +369,12 @@ tibble(
 Both approaches land on the same seat count (**46**) and closely aligned
 mean-median and efficiency gap values, despite using entirely different
 reallocation logic. As shown in @fig-maps-row, this agreement extends all
-the way down to individual district winners: not a single district flips
+the way down to individual district winners. Not a single district flips
 between the two methods. This agreement is itself evidence that the
 conclusion is not an artifact of either weighting method.
 
 ## Conclusion
 
-The proposed AB 604 map represents a meaningful shift in partisan advantage
-relative to the 2024 map, favoring Democrats across all three metrics
-examined: seat count, mean-median score, and efficiency gap. This conclusion
-is robust to the choice of vote-reallocation method, since Approach A
-(area-weighted) and Approach B (population-weighted) agree on every
-district's winner and produce closely aligned fairness metrics, despite
-resting on different assumptions about how votes are distributed within a
-precinct.
+The proposed AB 604 map shows a meaningful shift in partisan advantage relative to the 2024 map, favoring Democrats across the metrics examined here: seat count and the efficiency gap. This conclusion holds regardless of which reallocation method is used. Approach A (area-weighted) and Approach B (population-weighted) agree on every district's winner and produce closely aligned fairness metrics, despite resting on different assumptions about how votes are distributed within a precinct.
 
-The main limitation of this analysis is the asymmetry in how districts were
-included: the 2024-map metrics exclude any district that was not an actual
-D-vs-R contest that year, while both new-map approaches include all votes
-falling into each new district regardless of the original race. Readers
-should treat the *direction* of the shift as well-supported, while treating
-the exact *magnitude* with some caution given this asymmetry.
+The main limitation of this analysis is the asymmetry in how districts were included. The 2024 map metrics exclude any district that was not an actual D versus R contest that year, while both new map approaches include all votes falling into each new district regardless of the original race. Readers should treat the direction of the shift as well supported, while treating the exact magnitude with some caution given this asymmetry.
