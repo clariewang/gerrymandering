@@ -1,4 +1,6 @@
-# Gerrymandering Analysis: 2024 Map vs. Proposed AB 604 Map
+# Gerrymandering Analysis
+ 
+*2024 Map vs. Proposed AB 604 Map*
  
 This project looks at how a proposed California congressional redistricting map (AB 604) would have changed 2024 election outcomes. It uses public precinct level vote data and shapefiles.
  
